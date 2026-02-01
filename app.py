@@ -103,7 +103,7 @@ with st.sidebar:
     
     with st.expander("⚙️ **Strategy Settings**", expanded=False):
         st.caption("📊 **Position Settings:**")
-        max_positions = st.slider("Max Open Positions", 1, 30, 10, help="Maximum simultaneous trades")
+        max_positions = st.slider("Max Open Positions", 1, 50, 20, help="Maximum simultaneous trades")
         buy_size = st.slider("Buy Size (SOL)", 0.1, 2.0, 0.5, 0.1, help="Amount per trade")
         
         st.caption("🎯 **Exit Settings:**")
@@ -126,7 +126,7 @@ with st.sidebar:
         min_txns = st.slider("Min Transactions (1hr)", 0, 200, 50, 10, help="Activity filter (0=disabled)")
         
         st.caption("⏱️ **Cooldown:**")
-        cooldown_min = st.slider("Cooldown (minutes)", 0, 60, 15, 5, help="Wait time before re-buying same token (0=disabled)")
+        cooldown_min = st.slider("Cooldown (minutes)", 0, 60, 5, 1, help="Wait time before re-buying same token (0=disabled)")
         
         # Store all in session state
         st.session_state["strategy"] = {
@@ -277,72 +277,145 @@ st.session_state["last_price_fetch"] = price_fetch_time
 pnl = state.get_pnl(current_prices)
 realized_pnl = sum(float(t.get("pnl_sol", 0.0)) for t in state.trade_history)
 
-# Convert to USD
-balance_usd = state.virtual_balance * sol_usd_price
-active_value_usd = pnl["active_value_sol"] * sol_usd_price
-equity_usd = pnl["equity_sol"] * sol_usd_price
-unrealized_usd = pnl["unrealized_pnl_sol"] * sol_usd_price
-realized_usd = realized_pnl * sol_usd_price
+# Get commission settings - if disabled, we add back commissions retroactively
+commission_pct = st.session_state.get("commission_pct", 1.0)
+show_with_commissions = commission_pct > 0
+
+# When commissions are OFF, recalculate everything as if no commissions existed
+if show_with_commissions:
+    # Normal display with commissions
+    equity_sol_display = pnl["equity_sol"]
+    balance_usd = state.virtual_balance * sol_usd_price
+    active_value_usd = pnl["active_value_sol"] * sol_usd_price
+    equity_usd = equity_sol_display * sol_usd_price
+    unrealized_usd = pnl["unrealized_pnl_sol"] * sol_usd_price
+    realized_usd = realized_pnl * sol_usd_price
+else:
+    # No-commission display: add back all commissions
+    commission_adjustment_sol = state.total_commissions
+    
+    balance_sol_display = state.virtual_balance + commission_adjustment_sol
+    equity_sol_display = pnl["equity_sol"] + commission_adjustment_sol
+    
+    # Calculate what total_pnl should be without commissions
+    total_pnl_no_comm = equity_sol_display - state.starting_balance_sol
+    
+    # Unrealized stays the same (it doesn't include commission in cost)
+    unrealized_sol_display = pnl["unrealized_pnl_sol"]
+    
+    # Realized gets whatever adjustment is needed to make the math work:
+    # unrealized + realized = total_pnl
+    realized_sol_display = total_pnl_no_comm - unrealized_sol_display
+    
+    balance_usd = balance_sol_display * sol_usd_price
+    active_value_usd = pnl["active_value_sol"] * sol_usd_price
+    equity_usd = equity_sol_display * sol_usd_price
+    unrealized_usd = unrealized_sol_display * sol_usd_price
+    realized_usd = realized_sol_display * sol_usd_price
 
 # =====================================================================
 # METRICS (all in USD)
 # =====================================================================
 st.caption(f"SOL Price: ${sol_usd_price:.2f}")
 
-# Calculate equity growth percentage from starting balance
+# Calculate equity growth percentage from starting balance (using adjusted equity)
 starting_balance_usd = state.starting_balance_sol * sol_usd_price
-equity_growth_pct = ((pnl["equity_sol"] - state.starting_balance_sol) / state.starting_balance_sol) * 100 if state.starting_balance_sol > 0 else 0
+equity_growth_pct = ((equity_sol_display - state.starting_balance_sol) / state.starting_balance_sol) * 100 if state.starting_balance_sol > 0 else 0
 
-# Row 1: Account metrics
-metric_cols = st.columns(5)
-metric_cols[0].metric("💰 Balance", _fmt_usd(balance_usd), delta=f"{state.virtual_balance:.2f} SOL")
-metric_cols[1].metric("📈 Active Value", _fmt_usd(active_value_usd))
-metric_cols[2].metric("💎 Total Equity", _fmt_usd(equity_usd))
-metric_cols[3].metric(
-    "📊 Unrealized PnL", 
-    _fmt_usd(unrealized_usd),
-    delta=f"{(pnl['unrealized_pnl_sol']/state.starting_balance_sol)*100:.1f}%" if abs(pnl['unrealized_pnl_sol']) > 0.0001 else None
-)
-metric_cols[4].metric(
-    "📈 Equity Growth",
-    f"{equity_growth_pct:+.1f}%",
-    delta="total" if equity_growth_pct == 0 else None
-)
+# Calculate all stats
+open_trades = len(state.active_trades)
+open_wins = 0
+open_losses = 0
+for t in state.active_trades:
+    addr = t.get("address", "")
+    entry_price = float(t.get("entry_price", 0))
+    current_price = float(current_prices.get(addr, entry_price))
+    if current_price > entry_price:
+        open_wins += 1
+    elif current_price < entry_price:
+        open_losses += 1
+open_win_rate = (open_wins / open_trades * 100) if open_trades > 0 else 0
 
-# Row 2: Trade statistics
-total_trades = len(state.trade_history)
-wins = len([t for t in state.trade_history if float(t.get("pnl_sol", 0)) > 0])
-losses = total_trades - wins
-win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-total_pnl_usd = realized_usd
+closed_trades = len(state.trade_history)
+closed_wins = len([t for t in state.trade_history if float(t.get("pnl_sol", 0)) > 0])
+closed_losses = closed_trades - closed_wins
+closed_win_rate = (closed_wins / closed_trades * 100) if closed_trades > 0 else 0
 
-# Realized growth = realized PnL as % of starting balance
 starting_usd = state.starting_balance_sol * sol_usd_price
+
+# Growth calculations:
+# - Total Growth = based on total equity (balance + active) vs starting
+# - Unrealized Growth = unrealized PnL / starting (open positions only)
+# - Realized Growth = realized PnL / starting (closed trades only)
+total_growth_pct = equity_growth_pct  # Already calculated above
+unrealized_growth_pct = (unrealized_usd / starting_usd * 100) if starting_usd > 0 else 0
 realized_growth_pct = (realized_usd / starting_usd * 100) if starting_usd > 0 else 0
 
-stat_cols = st.columns(6)
-stat_cols[0].metric("📊 Total Trades", total_trades)
-stat_cols[1].metric("🏆 Wins", wins)
-stat_cols[2].metric("❌ Losses", losses)
-stat_cols[3].metric("🎯 Win Rate", f"{win_rate:.1f}%")
-stat_cols[4].metric("💵 Realized PnL", _fmt_usd(total_pnl_usd), delta=f"{total_pnl_usd:+.2f}" if total_pnl_usd != 0 else None)
-stat_cols[5].metric(
-    "📊 Realized Growth", 
-    f"{realized_growth_pct:+.1f}%",
-    delta="closed trades" if realized_growth_pct == 0 else None
-)
+# Total PnL = equity - starting (this is the TRUE PnL including commissions)
+total_pnl_usd = equity_usd - starting_usd
 
-# Row 3: Session info (reset time, commissions)
 from datetime import datetime
 reset_time = datetime.fromtimestamp(state.reset_timestamp)
 time_since_reset = datetime.now() - reset_time
 hours_running = time_since_reset.total_seconds() / 3600
-total_commissions_usd = state.total_commissions * sol_usd_price
+# Show commissions as 0 when disabled (retroactive), otherwise show actual
+total_commissions_usd = 0.0 if not show_with_commissions else state.total_commissions * sol_usd_price
 
-info_cols = st.columns(3)
-info_cols[0].caption(f"🕐 **Reset:** {reset_time.strftime('%Y-%m-%d %H:%M')} ({hours_running:.1f}h ago)")
-info_cols[1].caption(f"💸 **Commissions:** {_fmt_usd(total_commissions_usd)} ({state.total_commissions:.4f} SOL)")
-info_cols[2].caption(f"💰 **Net PnL:** {_fmt_usd(total_pnl_usd - total_commissions_usd)}")
+# =====================================================================
+# ROW 0: TOTAL (Account Overview)
+# =====================================================================
+st.markdown("### 💎 Total")
+total_row = st.columns(8)
+total_row[0].metric("🎯 Starting", _fmt_usd(starting_usd))
+total_row[1].metric("💎 Total Equity", _fmt_usd(equity_usd))
+total_row[2].metric("📊 Total PnL", _fmt_usd(total_pnl_usd))
+total_row[3].metric("📈 Total Growth", f"{total_growth_pct:+.1f}%")
+total_row[4].metric("💰 Balance", _fmt_usd(balance_usd))
+total_row[5].metric("📈 Active Value", _fmt_usd(active_value_usd))
+total_row[6].metric("💸 Commissions", _fmt_usd(total_commissions_usd))
+total_row[7].metric("🕐 Running", f"{hours_running:.1f}h")
+
+st.divider()
+
+# =====================================================================
+# MAIN LAYOUT: LEFT (Open) | RIGHT (Closed)
+# =====================================================================
+col_left, col_right = st.columns(2)
+
+# ----- LEFT SIDE: OPEN POSITIONS -----
+with col_left:
+    st.markdown("### 📂 Open Positions")
+    
+    # Open trades stats
+    l1 = st.columns(4)
+    l1[0].metric("Trades", open_trades)
+    l1[1].metric("🟢 Win", open_wins)
+    l1[2].metric("🔴 Lose", open_losses)
+    l1[3].metric("Win%", f"{open_win_rate:.0f}%")
+    
+    # Unrealized PnL (only from open trades)
+    l2 = st.columns(2)
+    l2[0].metric("📊 Unrealized PnL", _fmt_usd(unrealized_usd))
+    l2[1].metric("📈 Unrealized Growth", f"{unrealized_growth_pct:+.1f}%")
+
+# ----- RIGHT SIDE: CLOSED TRADES -----
+with col_right:
+    st.markdown("### 📁 Closed Trades")
+    
+    # Closed trades stats
+    r1 = st.columns(4)
+    r1[0].metric("Trades", closed_trades)
+    r1[1].metric("🏆 Win", closed_wins)
+    r1[2].metric("❌ Lose", closed_losses)
+    r1[3].metric("Win%", f"{closed_win_rate:.0f}%")
+    
+    # Realized PnL (only from closed trades)
+    r2 = st.columns(2)
+    r2[0].metric("💵 Realized PnL", _fmt_usd(realized_usd))
+    r2[1].metric("📈 Realized Growth", f"{realized_growth_pct:+.1f}%")
+
+# Reset time caption
+st.caption(f"🕐 Reset: {reset_time.strftime('%Y-%m-%d %H:%M')} | Total PnL: {_fmt_usd(total_pnl_usd)} | Net PnL: {_fmt_usd(realized_usd - total_commissions_usd)}")
 
 # Record equity snapshot for the curve
 state.record_equity_snapshot(current_prices)
@@ -354,61 +427,152 @@ if state.equity_history and len(state.equity_history) > 1:
     import plotly.graph_objects as go
     
     with st.expander("📈 **Equity Curve**", expanded=True):
-        # Build data for chart
+        # Toggle between Total, Realized, and Unrealized
+        curve_type = st.radio(
+            "Show:",
+            ["Total (Balance + Open)", "Realized (Closed Trades)", "Unrealized (Open Positions)"],
+            horizontal=True,
+            key="equity_curve_type"
+        )
+        
+        # Build data for chart - only include data from after the last reset
         eq_df = pd.DataFrame(state.equity_history)
         eq_df["time"] = pd.to_datetime(eq_df["ts"], unit="s")
-        eq_df["equity_usd"] = eq_df["equity_sol"] * sol_usd_price
-        eq_df["pnl_pct"] = ((eq_df["equity_sol"] / state.starting_balance_sol) - 1) * 100
+        
+        # Filter to only data after last reset
+        reset_time_dt = pd.to_datetime(state.reset_timestamp, unit="s")
+        eq_df = eq_df[eq_df["time"] >= reset_time_dt].copy()
+        
+        if len(eq_df) == 0:
+            # No data since reset, create empty frame
+            eq_df = pd.DataFrame(columns=["ts", "time", "equity_sol", "balance_sol", "active_value_sol", "equity_usd", "balance_usd", "unrealized_usd", "pnl_pct"])
+        else:
+            eq_df["equity_usd"] = eq_df["equity_sol"] * sol_usd_price
+            # Handle missing balance_sol in older records - fallback to equity_sol
+            if "balance_sol" not in eq_df.columns:
+                eq_df["balance_sol"] = eq_df["equity_sol"]
+            eq_df["balance_sol"] = eq_df["balance_sol"].fillna(eq_df["equity_sol"])
+            eq_df["balance_usd"] = eq_df["balance_sol"] * sol_usd_price  # Realized equity (balance only)
+            # Unrealized = active value (equity - balance)
+            if "active_value_sol" in eq_df.columns:
+                eq_df["unrealized_usd"] = eq_df["active_value_sol"] * sol_usd_price
+            else:
+                eq_df["unrealized_usd"] = (eq_df["equity_sol"] - eq_df["balance_sol"]) * sol_usd_price
+            eq_df["pnl_pct"] = ((eq_df["equity_sol"] / state.starting_balance_sol) - 1) * 100
         
         # Starting balance from last reset
         start_equity = state.starting_balance_sol * sol_usd_price
-        reset_time = pd.to_datetime(state.reset_timestamp, unit="s")
+        reset_time_dt = pd.to_datetime(state.reset_timestamp, unit="s")
         
         # Ensure the chart STARTS at starting balance from reset time
-        # Insert starting point if not already there
-        if len(eq_df) == 0 or eq_df["time"].iloc[0] > reset_time:
+        if len(eq_df) == 0 or eq_df["time"].iloc[0] > reset_time_dt:
             start_row = pd.DataFrame([{
                 "ts": state.reset_timestamp,
-                "time": reset_time,
+                "time": reset_time_dt,
                 "equity_usd": start_equity,
+                "balance_usd": start_equity,
+                "unrealized_usd": 0.0,  # No open positions at start
                 "equity_sol": state.starting_balance_sol,
+                "balance_sol": state.starting_balance_sol,
+                "active_value_sol": 0.0,
                 "pnl_pct": 0.0,
             }])
             eq_df = pd.concat([start_row, eq_df], ignore_index=True)
         
+        # Fill any missing unrealized_usd values
+        if "unrealized_usd" not in eq_df.columns:
+            eq_df["unrealized_usd"] = 0.0
+        eq_df["unrealized_usd"] = eq_df["unrealized_usd"].fillna(0.0)
+        
+        # Choose which data to show based on selection
+        if "Realized" in curve_type:
+            y_data = eq_df["balance_usd"]
+            chart_label = "Realized"
+            # For realized, baseline is starting balance
+            baseline = start_equity
+        elif "Unrealized" in curve_type:
+            y_data = eq_df["unrealized_usd"]
+            chart_label = "Unrealized"
+            # For unrealized, baseline is 0 (no open positions = no unrealized)
+            baseline = 0.0
+        else:  # Total
+            y_data = eq_df["equity_usd"]
+            chart_label = "Total"
+            baseline = start_equity
+        
+        current_value = y_data.iloc[-1]
+        
         # Create the chart
         fig = go.Figure()
         
-        current_equity = eq_df["equity_usd"].iloc[-1]
+        import numpy as np
+        y_values = y_data.values.astype(float)
+        x_values = eq_df["time"].values
         
-        # Color based on whether CURRENT is above or below START
-        is_profitable = current_equity >= start_equity
-        line_color = "#00ff88" if is_profitable else "#ff4444"
+        # Build separate green/red arrays with crossover points included in both
+        y_green = []
+        y_red = []
+        x_plot = []
         
-        # Equity line
+        for i in range(len(y_values)):
+            x_plot.append(x_values[i])
+            y_val = y_values[i]
+            
+            if y_val >= baseline:
+                y_green.append(y_val)
+                y_red.append(np.nan)
+            else:
+                y_green.append(np.nan)
+                y_red.append(y_val)
+            
+            # Check for crossover to next point - add the threshold point to both traces
+            if i < len(y_values) - 1:
+                curr = y_values[i]
+                next_val = y_values[i + 1]
+                # Crossing from above to below or below to above
+                if (curr >= baseline and next_val < baseline) or (curr < baseline and next_val >= baseline):
+                    # Insert the crossover point (at the threshold line)
+                    x_plot.append(x_values[i])  # Use same x (approximate)
+                    y_green.append(baseline)
+                    y_red.append(baseline)
+        
+        # Add green line (above start)
         fig.add_trace(go.Scatter(
-            x=eq_df["time"],
-            y=eq_df["equity_usd"],
+            x=x_plot,
+            y=y_green,
             mode="lines",
-            name="Equity",
-            line=dict(color=line_color, width=3),
+            name="Profit",
+            line=dict(color="#00ff88", width=3),
             hovertemplate="$%{y:.2f}<extra></extra>",
+            connectgaps=False,
         ))
         
-        # Starting balance reference line (always visible)
+        # Add red line (below start)
+        fig.add_trace(go.Scatter(
+            x=x_plot,
+            y=y_red,
+            mode="lines",
+            name="Loss",
+            line=dict(color="#ff4444", width=3),
+            hovertemplate="$%{y:.2f}<extra></extra>",
+            connectgaps=False,
+        ))
+        
+        # Baseline reference line (always visible)
+        baseline_label = "$0" if "Unrealized" in curve_type else f"Start: {_fmt_usd(baseline)}"
         fig.add_hline(
-            y=start_equity,
+            y=baseline,
             line_dash="dash",
             line_color="white",
             line_width=2,
-            annotation_text=f"Start: {_fmt_usd(start_equity)}",
+            annotation_text=baseline_label,
             annotation_position="right",
             annotation_font_color="white",
         )
         
-        # Calculate Y-axis range - ALWAYS include starting balance
-        y_min = min(eq_df["equity_usd"].min(), start_equity)
-        y_max = max(eq_df["equity_usd"].max(), start_equity)
+        # Calculate Y-axis range - ALWAYS include baseline
+        y_min = min(y_data.min(), baseline)
+        y_max = max(y_data.max(), baseline)
         y_range = y_max - y_min
         if y_range < 20:  # Minimum range of $20
             y_range = 20
@@ -427,7 +591,7 @@ if state.equity_history and len(state.equity_history) > 1:
             yaxis=dict(
                 showgrid=True,
                 gridcolor="rgba(128,128,128,0.2)",
-                title="Equity (USD)",
+                title=f"{chart_label} Equity (USD)",
                 range=[y_min - y_padding, y_max + y_padding],
             ),
             showlegend=False,
@@ -437,16 +601,22 @@ if state.equity_history and len(state.equity_history) > 1:
         
         # Stats under chart
         if len(eq_df) > 0:
-            latest = eq_df.iloc[-1]
-            first = eq_df.iloc[0]
-            max_equity = eq_df["equity_usd"].max()
-            min_equity = eq_df["equity_usd"].min()
+            max_val = y_data.max()
+            min_val = y_data.min()
+            
+            # Change calculation depends on curve type
+            if "Unrealized" in curve_type:
+                # For unrealized, show as % of starting balance
+                change_pct = (current_value / start_equity) * 100 if start_equity > 0 else 0
+            else:
+                # For total/realized, show change from baseline
+                change_pct = ((current_value / baseline) - 1) * 100 if baseline > 0 else 0
             
             chart_cols = st.columns(4)
-            chart_cols[0].metric("Current", _fmt_usd(latest["equity_usd"]))
-            chart_cols[1].metric("High", _fmt_usd(max_equity))
-            chart_cols[2].metric("Low", _fmt_usd(min_equity))
-            chart_cols[3].metric("Change", f"{latest['pnl_pct']:+.1f}%")
+            chart_cols[0].metric("Current", _fmt_usd(current_value))
+            chart_cols[1].metric("High", _fmt_usd(max_val))
+            chart_cols[2].metric("Low", _fmt_usd(min_val))
+            chart_cols[3].metric("Change", f"{change_pct:+.1f}%")
 
 # =====================================================================
 # BOT ACTIONS
@@ -698,47 +868,48 @@ with left:
         def set_hist_chart_addr(address: str):
             st.session_state["selected_chart_addr"] = address
         
-        # Data rows (limit to 10 most recent)
-        for idx, (_, row) in enumerate(hdf.head(10).iterrows()):
-            addr = str(row.get("address", ""))
-            symbol = row.get("symbol", "???")
-            source = str(row.get("source", "dexscreener"))
-            # 🔥 for pump.fun (bonding curve or graduated), 📈 for other DEX
-            is_pumpfun = source in ("pumpfun_ws", "pumpfun_graduated", "pumpfun") or addr.lower().endswith("pump")
-            src_icon = "🔥" if is_pumpfun else "📈"
-            exit_time = row["exit_ts"].strftime("%H:%M:%S") if hasattr(row["exit_ts"], "strftime") else str(row["exit_ts"])
-            cost = f"${row['cost_usd']:.2f}"
-            entry_px = f"{row['entry_price']:.10f}"
-            exit_px = f"{row['exit_price']:.10f}"
-            pnl_usd_val = row['pnl_usd']
-            pnl_pct_val = row['pnl_pct']
-            pnl_usd = f"${pnl_usd_val:+.2f}"
-            pnl_pct = f"{pnl_pct_val:+.1f}%"
-            
-            h_row_cols = st.columns([0.4, 1.0, 0.7, 0.6, 0.9, 0.9, 0.6, 0.5, 0.4])
-            h_row_cols[0].text(src_icon)
-            h_row_cols[1].text(exit_time)
-            h_row_cols[2].text(symbol)
-            h_row_cols[3].text(cost)
-            h_row_cols[4].text(entry_px)
-            h_row_cols[5].text(exit_px)
-            
-            # Color PnL
-            if pnl_usd_val >= 0:
-                h_row_cols[6].markdown(f":green[{pnl_usd}]")
-                h_row_cols[7].markdown(f":green[{pnl_pct}]")
-            else:
-                h_row_cols[6].markdown(f":red[{pnl_usd}]")
-                h_row_cols[7].markdown(f":red[{pnl_pct}]")
-            
-            # Chart button with callback
-            h_row_cols[8].button(
-                "📈", 
-                key=f"hist_chart_{addr}_{idx}", 
-                help=f"View {symbol} chart",
-                on_click=set_hist_chart_addr,
-                args=(addr,)
-            )
+        # Data rows in scrollable container (show ALL trades)
+        with st.container(height=400):
+            for idx, (_, row) in enumerate(hdf.iterrows()):
+                addr = str(row.get("address", ""))
+                symbol = row.get("symbol", "???")
+                source = str(row.get("source", "dexscreener"))
+                # 🔥 for pump.fun (bonding curve or graduated), 📈 for other DEX
+                is_pumpfun = source in ("pumpfun_ws", "pumpfun_graduated", "pumpfun") or addr.lower().endswith("pump")
+                src_icon = "🔥" if is_pumpfun else "📈"
+                exit_time = row["exit_ts"].strftime("%H:%M:%S") if hasattr(row["exit_ts"], "strftime") else str(row["exit_ts"])
+                cost = f"${row['cost_usd']:.2f}"
+                entry_px = f"{row['entry_price']:.10f}"
+                exit_px = f"{row['exit_price']:.10f}"
+                pnl_usd_val = row['pnl_usd']
+                pnl_pct_val = row['pnl_pct']
+                pnl_usd = f"${pnl_usd_val:+.2f}"
+                pnl_pct = f"{pnl_pct_val:+.1f}%"
+                
+                h_row_cols = st.columns([0.4, 1.0, 0.7, 0.6, 0.9, 0.9, 0.6, 0.5, 0.4])
+                h_row_cols[0].text(src_icon)
+                h_row_cols[1].text(exit_time)
+                h_row_cols[2].text(symbol)
+                h_row_cols[3].text(cost)
+                h_row_cols[4].text(entry_px)
+                h_row_cols[5].text(exit_px)
+                
+                # Color PnL
+                if pnl_usd_val >= 0:
+                    h_row_cols[6].markdown(f":green[{pnl_usd}]")
+                    h_row_cols[7].markdown(f":green[{pnl_pct}]")
+                else:
+                    h_row_cols[6].markdown(f":red[{pnl_usd}]")
+                    h_row_cols[7].markdown(f":red[{pnl_pct}]")
+                
+                # Chart button with callback
+                h_row_cols[8].button(
+                    "📈", 
+                    key=f"hist_chart_{addr}_{idx}", 
+                    help=f"View {symbol} chart",
+                    on_click=set_hist_chart_addr,
+                    args=(addr,)
+                )
         
         st.divider()
     else:
