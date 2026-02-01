@@ -40,7 +40,8 @@ if "pumpfun_started" not in st.session_state:
         from pumpfun_stream import start_stream, is_connected
         start_stream()
         st.session_state["pumpfun_started"] = True
-    except ImportError:
+    except Exception:
+        # Handle any import/connection errors gracefully
         st.session_state["pumpfun_started"] = False
 
 

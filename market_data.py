@@ -27,7 +27,8 @@ try:
         start_stream as start_pumpfun_stream,
     )
     PUMPFUN_AVAILABLE = True
-except ImportError:
+except Exception:
+    # Gracefully handle any import error (ImportError, SSL issues, etc.)
     PUMPFUN_AVAILABLE = False
     def get_pumpfun_tokens(): return []
     def get_pumpfun_stats(): return {}
