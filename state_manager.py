@@ -48,9 +48,10 @@ class StateManager:
     # Cooldown period after selling before we can buy the same token again
     COOLDOWN_SECONDS = 15 * 60  # 15 minutes
 
-    def __init__(self, path: str = "paper_data.json", starting_balance_sol: float = 10.0):
+    def __init__(self, path: str = "paper_data.json", starting_balance_sol: float = 10.0, memory_only: bool = False):
         self.path = path
         self.starting_balance_sol = float(starting_balance_sol)
+        self.memory_only = memory_only  # If True, don't load/save to file
 
         self.virtual_balance: float = self.starting_balance_sol
         self.active_trades: List[Dict[str, Any]] = []
@@ -60,7 +61,8 @@ class StateManager:
         self.total_commissions: float = 0.0  # Total fees paid (in SOL)
         self.equity_history: List[Dict[str, Any]] = []  # Equity snapshots over time
 
-        self._load()
+        if not memory_only:
+            self._load()
 
     def _load(self) -> None:
         if not os.path.exists(self.path):
@@ -92,6 +94,8 @@ class StateManager:
 
     def _save(self) -> None:
         """Save state to file. Silently fails on read-only filesystems (like Streamlit Cloud)."""
+        if self.memory_only:
+            return  # Skip saving in memory-only mode
         try:
             tmp_path = f"{self.path}.tmp"
             payload = {

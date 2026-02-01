@@ -80,9 +80,14 @@ st.set_page_config(
 st.title("🚀 Pump.fun Paper Trading Dashboard")
 st.caption("Real-time paper trading with LIVE pump.fun token data from pumpfunapi.org")
 
+# Detect if running on Streamlit Cloud
+import os
+IS_CLOUD = os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_SERVER_HEADLESS")
+
 # Initialize state manager (per-user session state for cloud)
 if "state_manager" not in st.session_state:
-    st.session_state["state_manager"] = StateManager()
+    # Use memory_only=True on cloud so each user has independent state
+    st.session_state["state_manager"] = StateManager(memory_only=IS_CLOUD)
 state = st.session_state["state_manager"]
 
 # =====================================================================
