@@ -78,16 +78,27 @@ st.set_page_config(
 )
 
 st.title("🚀 Pump.fun Paper Trading Dashboard")
-st.caption("Real-time paper trading with LIVE pump.fun token data from pumpfunapi.org")
+st.caption(f"Real-time paper trading with LIVE pump.fun token data from pumpfunapi.org | Session: {st.session_state.get('session_id', 'local')}")
 
-# Detect if running on Streamlit Cloud
+# Generate unique session ID for each user
 import os
-IS_CLOUD = os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("STREAMLIT_SERVER_HEADLESS")
+import uuid
 
-# Initialize state manager (per-user session state for cloud)
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = str(uuid.uuid4())[:8]
+
+# Detect if running on Streamlit Cloud (check multiple env vars)
+IS_CLOUD = bool(
+    os.environ.get("STREAMLIT_SHARING_MODE") or 
+    os.environ.get("STREAMLIT_SERVER_HEADLESS") or
+    os.environ.get("HOSTNAME", "").startswith("streamlit")
+)
+
+# Initialize state manager (per-user session state)
+# On cloud: use memory_only=True for complete isolation
+# Locally: use file-based persistence
 if "state_manager" not in st.session_state:
-    # Use memory_only=True on cloud so each user has independent state
-    st.session_state["state_manager"] = StateManager(memory_only=IS_CLOUD)
+    st.session_state["state_manager"] = StateManager(memory_only=True)  # Always memory-only for cloud safety
 state = st.session_state["state_manager"]
 
 # =====================================================================
