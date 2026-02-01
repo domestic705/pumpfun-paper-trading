@@ -79,8 +79,10 @@ st.set_page_config(
 st.title("🚀 Pump.fun Paper Trading Dashboard")
 st.caption("Real-time paper trading with LIVE pump.fun token data from pumpfunapi.org")
 
-# Initialize state manager
-state = StateManager()
+# Initialize state manager (per-user session state for cloud)
+if "state_manager" not in st.session_state:
+    st.session_state["state_manager"] = StateManager()
+state = st.session_state["state_manager"]
 
 # =====================================================================
 # SIDEBAR
