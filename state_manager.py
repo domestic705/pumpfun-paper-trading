@@ -91,20 +91,25 @@ class StateManager:
         self.equity_history = list(data.get("equity_history", []))
 
     def _save(self) -> None:
-        tmp_path = f"{self.path}.tmp"
-        payload = {
-            "virtual_balance": self.virtual_balance,
-            "active_trades": self.active_trades,
-            "trade_history": self.trade_history,
-            "cooldowns": self.cooldowns,
-            "reset_timestamp": self.reset_timestamp,
-            "total_commissions": self.total_commissions,
-            "equity_history": self.equity_history[-500:],  # Keep last 500 snapshots
-            "saved_at": time.time(),
-        }
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-        os.replace(tmp_path, self.path)
+        """Save state to file. Silently fails on read-only filesystems (like Streamlit Cloud)."""
+        try:
+            tmp_path = f"{self.path}.tmp"
+            payload = {
+                "virtual_balance": self.virtual_balance,
+                "active_trades": self.active_trades,
+                "trade_history": self.trade_history,
+                "cooldowns": self.cooldowns,
+                "reset_timestamp": self.reset_timestamp,
+                "total_commissions": self.total_commissions,
+                "equity_history": self.equity_history[-500:],  # Keep last 500 snapshots
+                "saved_at": time.time(),
+            }
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, sort_keys=True)
+            os.replace(tmp_path, self.path)
+        except (OSError, IOError):
+            # Silently fail on read-only filesystems (Streamlit Cloud)
+            pass
 
     def _find_active_trade_idx(self, address: str) -> Optional[int]:
         for i, t in enumerate(self.active_trades):
